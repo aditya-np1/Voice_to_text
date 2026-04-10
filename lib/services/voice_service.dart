@@ -1,43 +1,120 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
+class _AudioJob {
+  final String path;
+  final Duration duration;
+  _AudioJob(this.path, this.duration);
+}
+
 class VoiceService {
   final AudioRecorder _recorder = AudioRecorder();
+  
+  final String _apiKey = 'sk_j1oxq2cy_PZrhAk5huGj39UnWQjY4Co3u';
 
-  // This starts the recording
+  final List<_AudioJob> _audioQueue = [];
+  final ValueNotifier<bool> isProcessing = ValueNotifier<bool>(false);
+  DateTime? _recordingStartTime;
+  
+  final StreamController<String> _transcriptionController = StreamController<String>.broadcast();
+  Stream<String> get transcriptions => _transcriptionController.stream;
+
   Future<void> startRecording() async {
-    // 1. Check if we have permission to record
     if (await _recorder.hasPermission()) {
+      final directory = await getApplicationDocumentsDirectory();
+      final String vichaarPath = '${directory.path}/Vichaar';
+      
+      final Directory vichaarDir = Directory(vichaarPath);
+      if (!await vichaarDir.exists()) {
+        await vichaarDir.create(recursive: true);
+      }
 
-      // 2. Get a directory to save the temporary audio file
-      final directory = await getTemporaryDirectory();
-      final String path = '${directory.path}/my_record.m4a';
+      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final String path = '$vichaarPath/recording_$timestamp.wav';
 
-      // 3. Start recording with default configuration
-      const config = RecordConfig();
+      const config = RecordConfig(
+        encoder: AudioEncoder.wav,
+        sampleRate: 24000,
+        bitRate: 128000,
+      );
+      
       await _recorder.start(config, path: path);
-
-      print("Recording started at: $path");
-    } else {
-      print("Microphone permission denied");
+      _recordingStartTime = DateTime.now();
     }
   }
 
-  // This stops the recording and returns the path to the file
-  Future<String?> stopRecording() async {
+  Future<void> stopAndQueue() async {
     final String? path = await _recorder.stop();
-    print("Recording stopped. File saved at: $path");
-    return path;
+    final endTime = DateTime.now();
+    
+    if (path != null && _recordingStartTime != null) {
+      final duration = endTime.difference(_recordingStartTime!);
+      _audioQueue.add(_AudioJob(path, duration));
+      _processQueue();
+    }
+    _recordingStartTime = null;
   }
 
-  // This will save text to a file in the app's documents directory
+  Future<void> _processQueue() async {
+    if (isProcessing.value || _audioQueue.isEmpty) return;
+
+    isProcessing.value = true;
+
+    while (_audioQueue.isNotEmpty) {
+      final job = _audioQueue.removeAt(0);
+      final String? result = await _sendToSarvam(job.path, job.duration);
+      
+      if (result != null && result.isNotEmpty) {
+        _transcriptionController.add(result);
+        await saveToTextFile(result);
+      }
+    }
+
+    isProcessing.value = false;
+  }
+
+  Future<String?> _sendToSarvam(String filePath, Duration audioDuration) async {
+    final url = Uri.parse('https://api.sarvam.ai/speech-to-text');
+    try {
+      var request = http.MultipartRequest('POST', url);
+      request.headers['api-subscription-key'] = _apiKey;
+      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+      request.fields['model'] = 'saaras:v3';
+      request.fields['mode'] = 'translate';
+
+      // Dynamic timeout: 2x the audio length, with a minimum of 30s and max of 5 mins
+      final timeoutSeconds = math.max(30, math.min(300, audioDuration.inSeconds * 2));
+      
+      var streamedResponse = await request.send().timeout(
+          Duration(seconds: timeoutSeconds));
+      var response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['transcript'];
+      }
+    } on TimeoutException catch (_) {
+      debugPrint("Transcription Error: Upload timed out after ${audioDuration.inSeconds * 2}s. Check your internet.");
+    } catch (e) {
+      debugPrint("Transcription Error: $e");
+    }
+    return null;
+  }
+
   Future<void> saveToTextFile(String content) async {
     final directory = await getApplicationDocumentsDirectory();
     final file = File('${directory.path}/transcriptions.txt');
-    
-    // Append the new content to the file
-    await file.writeAsString("$content\n", mode: FileMode.append);
-    print("Saved text to: ${file.path}");
+    await file.writeAsString("${DateTime.now()}: $content\n", mode: FileMode.append);
+  }
+
+  void dispose() {
+    _transcriptionController.close();
+    isProcessing.dispose();
   }
 }
