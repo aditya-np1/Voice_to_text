@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -18,8 +17,8 @@ class VoiceService {
   
   final String _apiKey = 'sk_j1oxq2cy_PZrhAk5huGj39UnWQjY4Co3u';
 
-  final List<_AudioJob> _audioQueue = [];
   final ValueNotifier<bool> isProcessing = ValueNotifier<bool>(false);
+  int _activeTranscriptionCount = 0;
   DateTime? _recordingStartTime;
   
   final StreamController<String> _transcriptionController = StreamController<String>.broadcast();
@@ -28,15 +27,16 @@ class VoiceService {
   Future<void> startRecording() async {
     if (await _recorder.hasPermission()) {
       final directory = await getApplicationDocumentsDirectory();
-      final String vichaarPath = '${directory.path}/Vichaar';
+      // Everything stays inside the 'Media' folder
+      final String mediaPath = '${directory.path}/Media';
       
-      final Directory vichaarDir = Directory(vichaarPath);
-      if (!await vichaarDir.exists()) {
-        await vichaarDir.create(recursive: true);
+      final Directory mediaDir = Directory(mediaPath);
+      if (!await mediaDir.exists()) {
+        await mediaDir.create(recursive: true);
       }
 
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final String path = '$vichaarPath/recording_$timestamp.wav';
+      final String path = '$mediaPath/recording_$timestamp.wav';
 
       const config = RecordConfig(
         encoder: AudioEncoder.wav,
@@ -55,62 +55,83 @@ class VoiceService {
     
     if (path != null && _recordingStartTime != null) {
       final duration = endTime.difference(_recordingStartTime!);
-      _audioQueue.add(_AudioJob(path, duration));
-      _processQueue();
+      // Start transcription immediately in parallel background
+      _startTranscriptionTask(_AudioJob(path, duration));
     }
     _recordingStartTime = null;
   }
 
-  Future<void> _processQueue() async {
-    if (isProcessing.value || _audioQueue.isEmpty) return;
-
+  /// background task that retries on failure
+  Future<void> _startTranscriptionTask(_AudioJob job) async {
+    _activeTranscriptionCount++;
     isProcessing.value = true;
 
-    while (_audioQueue.isNotEmpty) {
-      final job = _audioQueue.removeAt(0);
-      final String? result = await _sendToSarvam(job.path, job.duration);
-      
-      if (result != null && result.isNotEmpty) {
-        _transcriptionController.add(result);
-        await saveToTextFile(result);
+    int retryCount = 0;
+    const maxRetries = 3;
+    bool success = false;
+
+    while (retryCount < maxRetries && !success) {
+      try {
+        final String? result = await _sendToSarvam(job.path);
+        
+        if (result != null && result.isNotEmpty) {
+          _transcriptionController.add(result);
+          await saveToTextFile(result);
+          success = true;
+        } else {
+          throw Exception("Empty result or API error");
+        }
+      } catch (e) {
+        retryCount++;
+        debugPrint("Transcription attempt $retryCount failed for ${job.path}: $e");
+        if (retryCount < maxRetries) {
+          // Wait longer between each retry (Backoff)
+          await Future.delayed(Duration(seconds: 5 * retryCount));
+        }
       }
     }
 
-    isProcessing.value = false;
+    _activeTranscriptionCount--;
+    if (_activeTranscriptionCount == 0) {
+      isProcessing.value = false;
+    }
   }
 
-  Future<String?> _sendToSarvam(String filePath, Duration audioDuration) async {
+  Future<String?> _sendToSarvam(String filePath) async {
     final url = Uri.parse('https://api.sarvam.ai/speech-to-text');
-    try {
-      var request = http.MultipartRequest('POST', url);
-      request.headers['api-subscription-key'] = _apiKey;
-      request.files.add(await http.MultipartFile.fromPath('file', filePath));
-      request.fields['model'] = 'saaras:v3';
-      request.fields['mode'] = 'translate';
+    
+    var request = http.MultipartRequest('POST', url);
+    request.headers['api-subscription-key'] = _apiKey;
+    request.files.add(await http.MultipartFile.fromPath('file', filePath));
+    request.fields['model'] = 'saaras:v3';
+    request.fields['mode'] = 'translate';
+    // request.fields['language_code'] = 'hi-IN'; // Uncomment if you want to force Hindi
 
-      // Dynamic timeout: 2x the audio length, with a minimum of 30s and max of 5 mins
-      final timeoutSeconds = math.max(30, math.min(300, audioDuration.inSeconds * 2));
-      
-      var streamedResponse = await request.send().timeout(
-          Duration(seconds: timeoutSeconds));
-      var response = await http.Response.fromStream(streamedResponse);
+    // Removed tight dynamic timeout.
+    // Using a very generous 10-minute timeout to allow for slow uploads and long server processing.
+    var streamedResponse = await request.send().timeout(const Duration(minutes: 10));
+    var response = await http.Response.fromStream(streamedResponse);
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        return data['transcript'];
-      }
-    } on TimeoutException catch (_) {
-      debugPrint("Transcription Error: Upload timed out after ${audioDuration.inSeconds * 2}s. Check your internet.");
-    } catch (e) {
-      debugPrint("Transcription Error: $e");
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      return data['transcript'];
+    } else {
+      throw Exception("Sarvam API returned ${response.statusCode}: ${response.body}");
     }
-    return null;
   }
 
   Future<void> saveToTextFile(String content) async {
     final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/transcriptions.txt');
-    await file.writeAsString("${DateTime.now()}: $content\n", mode: FileMode.append);
+    // Strictly saved inside Project/Media folder
+    final file = File('${directory.path}/Media/transcriptions.txt');
+    
+    // Append the text one by one with a timestamp for better idea management
+    final String timestamp = DateTime.now().toLocal().toString().split('.')[0];
+    await file.writeAsString(
+      "[$timestamp]\n$content\n\n", 
+      mode: FileMode.append,
+      flush: true
+    );
   }
 
   void dispose() {
