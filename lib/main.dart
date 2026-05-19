@@ -1,17 +1,38 @@
 import 'package:flutter/material.dart';
 import 'package:voice_to_text/screens/welcome_screen.dart';
 import 'package:voice_to_text/utils/app_styles.dart';
+import 'package:voice_to_text/services/voice_trigger_service.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:voice_to_text/screens/onboarding_screen.dart';
+import 'package:voice_to_text/screens/home_screen.dart';
 
-void main() {
-  runApp(const VoiceToTextApp());
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // HotKeyManager init (if needed in this version, handled natively)
+
+  await Hive.initFlutter();
+  await Hive.openBox('user_prefs');
+
+  // Initialize the Voice Trigger Service
+  final triggerService = VoiceTriggerService();
+  await triggerService.init(onTextCaptured: (text) {
+    debugPrint("Trigger Captured Text: $text");
+  });
+
+  runApp(VoiceToTextApp(triggerService: triggerService));
 }
 
 class VoiceToTextApp extends StatelessWidget {
-  const VoiceToTextApp({super.key});
+  final VoiceTriggerService triggerService;
+  const VoiceToTextApp({super.key, required this.triggerService});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Vichar AI',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -19,6 +40,12 @@ class VoiceToTextApp extends StatelessWidget {
         primaryColor: AppColors.primaryPurple,
         useMaterial3: true,
       ),
+      // Wrapper for Two-Finger Long Press (Android)
+      builder: (context, child) {
+        return triggerService.wrapWithTrigger(
+          child: child ?? const SizedBox(),
+        );
+      },
       home: const SplashScreenLoader(),
     );
   }
@@ -45,10 +72,13 @@ class _SplashScreenLoaderState extends State<SplashScreenLoader> with SingleTick
 
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) {
+        final prefsBox = Hive.box('user_prefs');
+        final bool onboardingDone = prefsBox.get('onboarding_done', defaultValue: false);
+
         Navigator.pushReplacement(
           context,
           PageRouteBuilder(
-            pageBuilder: (context, animation, secondaryAnimation) => const WelcomeScreen(),
+            pageBuilder: (context, animation, secondaryAnimation) => onboardingDone ? const HomeScreen() : const OnboardingScreen(),
             transitionsBuilder: (context, animation, secondaryAnimation, child) {
               return FadeTransition(opacity: animation, child: child);
             },

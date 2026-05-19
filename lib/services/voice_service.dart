@@ -13,11 +13,17 @@ class _AudioJob {
 }
 
 class VoiceService {
+  // Singleton pattern to ensure global state consistency
+  static final VoiceService _instance = VoiceService._internal();
+  factory VoiceService() => _instance;
+  VoiceService._internal();
+
   final AudioRecorder _recorder = AudioRecorder();
   
   final String _apiKey = 'sk_j1oxq2cy_PZrhAk5huGj39UnWQjY4Co3u';
 
   final ValueNotifier<bool> isProcessing = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> isRecording = ValueNotifier<bool>(false);
   int _activeTranscriptionCount = 0;
   DateTime? _recordingStartTime;
   
@@ -25,9 +31,11 @@ class VoiceService {
   Stream<String> get transcriptions => _transcriptionController.stream;
 
   Future<void> startRecording() async {
+    if (isRecording.value) return;
+
     if (await _recorder.hasPermission()) {
       final directory = await getApplicationDocumentsDirectory();
-      // Everything stays inside the 'Media' folder
+      // Strictly using 'Media' folder as requested for all project data
       final String mediaPath = '${directory.path}/Media';
       
       final Directory mediaDir = Directory(mediaPath);
@@ -46,22 +54,27 @@ class VoiceService {
       
       await _recorder.start(config, path: path);
       _recordingStartTime = DateTime.now();
+      isRecording.value = true;
+      debugPrint("Recording started: $path");
     }
   }
 
   Future<void> stopAndQueue() async {
+    if (!isRecording.value) return;
+
     final String? path = await _recorder.stop();
     final endTime = DateTime.now();
+    isRecording.value = false;
     
     if (path != null && _recordingStartTime != null) {
       final duration = endTime.difference(_recordingStartTime!);
-      // Start transcription immediately in parallel background
+      // Launch transcription in parallel background task
       _startTranscriptionTask(_AudioJob(path, duration));
     }
     _recordingStartTime = null;
   }
 
-  /// background task that retries on failure
+  /// Background worker that retries on failure and supports parallel tasks
   Future<void> _startTranscriptionTask(_AudioJob job) async {
     _activeTranscriptionCount++;
     isProcessing.value = true;
@@ -92,6 +105,7 @@ class VoiceService {
     }
 
     _activeTranscriptionCount--;
+    // Only set processing to false if no other tasks are running
     if (_activeTranscriptionCount == 0) {
       isProcessing.value = false;
     }
@@ -105,10 +119,8 @@ class VoiceService {
     request.files.add(await http.MultipartFile.fromPath('file', filePath));
     request.fields['model'] = 'saaras:v3';
     request.fields['mode'] = 'translate';
-    // request.fields['language_code'] = 'hi-IN'; // Uncomment if you want to force Hindi
 
-    // Removed tight dynamic timeout.
-    // Using a very generous 10-minute timeout to allow for slow uploads and long server processing.
+    // Generous 10-minute timeout for slow connections
     var streamedResponse = await request.send().timeout(const Duration(minutes: 10));
     var response = await http.Response.fromStream(streamedResponse);
 
@@ -125,8 +137,8 @@ class VoiceService {
     // Strictly saved inside Project/Media folder
     final file = File('${directory.path}/Media/transcriptions.txt');
     
-    // Append the text one by one with a timestamp for better idea management
     final String timestamp = DateTime.now().toLocal().toString().split('.')[0];
+    // Use append mode to keep all responses one after another
     await file.writeAsString(
       "[$timestamp]\n$content\n\n", 
       mode: FileMode.append,
@@ -137,5 +149,6 @@ class VoiceService {
   void dispose() {
     _transcriptionController.close();
     isProcessing.dispose();
+    isRecording.dispose();
   }
 }
