@@ -3,29 +3,22 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:speech_to_text/speech_to_text.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vibration/vibration.dart';
 import 'package:permission_handler/permission_handler.dart';
-import '../widgets/trigger_overlay.dart';
 import 'voice_service.dart';
-import '../main.dart'; 
-import 'dart:convert';
 
 class VoiceTriggerService {
   static final VoiceTriggerService _instance = VoiceTriggerService._internal();
   factory VoiceTriggerService() => _instance;
   VoiceTriggerService._internal();
 
-  final SpeechToText _speech = SpeechToText();
   final VoiceService _voiceService = VoiceService();
   final MethodChannel _platform = const MethodChannel('com.yourapp/trigger');
   
-  OverlayEntry? _overlayEntry;
   Function(String)? _onCaptured;
   bool _isTriggerActive = false;
   String _currentMode = 'two_finger_long';
-  bool _sttInitialized = false;
 
   final Set<int> _activePointers = {};
   Timer? _twoFingerTimer;
@@ -40,20 +33,9 @@ class VoiceTriggerService {
     }
   }
 
-
-
   Future<void> _initAndroidTriggers() async {
-    try {
-      _sttInitialized = await _speech.initialize(
-        onError: (error) => debugPrint('Speech Error: $error'),
-        onStatus: (status) => debugPrint('Speech Status: $status'),
-      );
-    } catch (e) {
-      debugPrint('Speech-to-Text initialization failed: $e');
-    }
-    
     final prefs = await SharedPreferences.getInstance();
-    _currentMode = prefs.getString('trigger_mode') ?? 'two_finger_long';
+    _currentMode = prefs.getString('trigger_mode') ?? 'power_triple';
     bool backgroundEnabled = prefs.getBool('background_trigger_enabled') ?? false;
 
     if (_currentMode == 'power_triple' && backgroundEnabled) {
@@ -66,6 +48,16 @@ class VoiceTriggerService {
       }
       return null;
     });
+
+    // Check if the app was launched by a background hardware button trigger
+    try {
+      final bool initialTrigger = await _platform.invokeMethod('checkInitialTrigger');
+      if (initialTrigger && !_isTriggerActive) {
+        _handleTriggerFired();
+      }
+    } catch (e) {
+      debugPrint("Failed to check initial trigger: $e");
+    }
   }
 
   Future<bool> requestPermissionsAndEnable() async {
@@ -81,6 +73,8 @@ class VoiceTriggerService {
       if (statuses[Permission.microphone]!.isGranted) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('background_trigger_enabled', true);
+        await prefs.setString('trigger_mode', 'power_triple');
+        _currentMode = 'power_triple';
         
         if (_currentMode == 'power_triple') {
           _startNativeService();
@@ -142,60 +136,33 @@ class VoiceTriggerService {
     
     // Haptic only for mobile
     if (!kIsWeb && Platform.isAndroid) {
-      if (await Vibration.hasVibrator() ?? false) {
-        Vibration.vibrate(pattern: [0, 80, 100, 80]);
+      if (await Vibration.hasVibrator()) {
+        Vibration.vibrate(duration: 100);
       }
     }
 
-    _showOverlay();
-    
     // Core voice capture (Media/Vichaar folder)
     await _voiceService.startRecording();
     
-    if (Platform.isAndroid && _sttInitialized) {
-      // Use STT for automatic silence detection on Android
-      _speech.listen(
-        onResult: (result) {
-          if (result.finalResult) {
-            _finishTrigger(result.recognizedWords);
-          }
-        },
-        listenFor: const Duration(seconds: 60),
-        pauseFor: const Duration(seconds: 2),
-        listenOptions: SpeechListenOptions(listenMode: ListenMode.dictation),
-      );
-    } else {
-      // On Windows or if STT is not available, we wait for a manual stop or a fixed time
-      // For now, let's implement a 10s auto-stop or provide a way to stop it.
-      // Since it's a trigger, maybe 15 seconds of capture is a good default for "Ideas".
-      Timer(const Duration(seconds: 15), () {
-        _finishTrigger("Thought captured (Windows/No-STT)");
-      });
-    }
+    Timer(const Duration(seconds: 15), () {
+      _finishTrigger("Thought captured (Windows/No-STT)");
+    });
   }
 
   void _finishTrigger(String text) async {
     if (!_isTriggerActive) return;
     _isTriggerActive = false;
 
-    if (Platform.isAndroid) await _speech.stop();
+    if (!kIsWeb && Platform.isAndroid) {
+      if (await Vibration.hasVibrator()) {
+        Vibration.vibrate(duration: 100);
+      }
+    }
+
     await _voiceService.stopAndQueue();
-    _hideOverlay();
 
     if (text.isNotEmpty && _onCaptured != null) {
       _onCaptured!(text);
     }
-  }
-
-  void _showOverlay() {
-    final overlayState = navigatorKey.currentState?.overlay;
-    if (overlayState == null) return;
-    _overlayEntry = OverlayEntry(builder: (context) => const TriggerOverlay());
-    overlayState.insert(_overlayEntry!);
-  }
-
-  void _hideOverlay() {
-    _overlayEntry?.remove();
-    _overlayEntry = null;
   }
 }

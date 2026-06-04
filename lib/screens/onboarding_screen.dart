@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:voice_to_text/screens/home_screen.dart';
 import 'package:voice_to_text/utils/app_styles.dart';
@@ -33,7 +32,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final Set<String> _selectedIntents = {};
   final List<String> _customIntents = [];
 
-  final stt.SpeechToText _speechToText = stt.SpeechToText();
   bool _isListening = false;
 
   // Screen 3 Data
@@ -101,37 +99,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       return;
     }
 
-    bool available = await _speechToText.initialize(
-      onError: (e) => debugPrint('STT Error: $e'),
-      onStatus: (s) {
-        if (s == 'notListening' || s == 'done') {
-          setState(() => _isListening = false);
-        }
-      },
-    );
     
-    if (available) {
-      setState(() => _isListening = true);
-      _speechToText.listen(
-        onResult: (result) {
-          if (result.finalResult && result.recognizedWords.isNotEmpty) {
-            setState(() {
-              if (!_customIntents.contains(result.recognizedWords)) {
-                _customIntents.add(result.recognizedWords);
-              }
-              _isListening = false;
-            });
-          }
-        },
-        listenMode: stt.ListenMode.dictation,
-      );
-    } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Speech to text not available on this device.')),
         );
       }
-    }
   }
 
   Future<void> _completeSetup() async {
@@ -357,7 +330,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         side: const BorderSide(color: AppColors.primaryPurple, width: 1.5),
       ),
       onPressed: _isListening ? () {
-        _speechToText.stop();
         setState(() => _isListening = false);
       } : _startListening,
     );

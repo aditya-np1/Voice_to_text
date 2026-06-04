@@ -1,17 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:voice_to_text/screens/welcome_screen.dart';
 import 'package:voice_to_text/utils/app_styles.dart';
 import 'package:voice_to_text/services/voice_trigger_service.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:voice_to_text/screens/onboarding_screen.dart';
 import 'package:voice_to_text/screens/home_screen.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // HotKeyManager init (if needed in this version, handled natively)
+  // Request microphone permission at startup
+  await Permission.microphone.request();
 
   await Hive.initFlutter();
   await Hive.openBox('user_prefs');

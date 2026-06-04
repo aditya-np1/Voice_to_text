@@ -15,8 +15,8 @@ class PowerButtonReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
         if (context == null || intent == null) return
         
-        val action = intent.action
-        if (action == Intent.ACTION_SCREEN_OFF || action == Intent.ACTION_SCREEN_ON) {
+        val intentAction = intent.action
+        if (intentAction == Intent.ACTION_SCREEN_OFF || intentAction == Intent.ACTION_SCREEN_ON) {
             val now = SystemClock.elapsedRealtime()
             
             if (now - lastPressTime < THRESHOLD) {
@@ -28,9 +28,15 @@ class PowerButtonReceiver : BroadcastReceiver() {
 
             if (pressCount >= 3) {
                 pressCount = 0
-                val triggerIntent = Intent("com.yourapp.TRIGGER_FIRED")
-                triggerIntent.setPackage(context.packageName)
-                context.sendBroadcast(triggerIntent)
+                // Send intent to TriggerBackgroundService to handle wake-up safely
+                val serviceIntent = Intent(context, TriggerBackgroundService::class.java).apply {
+                    action = "com.example.voice_to_text.TRIGGER_WAKEUP"
+                }
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    context.startForegroundService(serviceIntent)
+                } else {
+                    context.startService(serviceIntent)
+                }
             }
         }
     }

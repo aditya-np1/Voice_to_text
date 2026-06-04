@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:voice_to_text/screens/notes_screen.dart';
 import 'package:voice_to_text/screens/voice_recording_screen.dart';
+import 'package:voice_to_text/services/ai_routing_service.dart';
 import 'package:voice_to_text/utils/app_styles.dart';
+import 'package:voice_to_text/widgets/app_drawer.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -11,12 +13,19 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  String _selectedFolder = 'All Notes';
   int _currentIndex = 0;
 
-  final List<Widget> _screens = [
-    const VoiceRecordingScreen(),
-    const NotesScreen(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _initRouting();
+  }
+  
+  Future<void> _initRouting() async {
+    await AiRoutingService().processInbox();
+    setState((){}); // Refresh notes after processing
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,12 +34,30 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
-        title: Text('VICHAR WORKSPACE', style: AppStyles.brandName.copyWith(fontSize: 14)),
+        title: Text(
+          _currentIndex == 0 ? 'VICHAR CAPTURE' : '${_selectedFolder.toUpperCase()} WORKSPACE', 
+          style: AppStyles.brandName.copyWith(fontSize: 14)
+        ),
         centerTitle: true,
       ),
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _screens,
+      drawer: AppDrawer(
+        currentFolder: _selectedFolder,
+        onFolderSelected: (folder) {
+          setState(() { 
+            _selectedFolder = folder; 
+            _currentIndex = 1; // Auto switch to Notes tab to see folder contents
+          });
+          Navigator.pop(context); // close drawer
+        },
+      ),
+      body: SafeArea(
+        child: IndexedStack(
+          index: _currentIndex,
+          children: [
+            const VoiceRecordingScreen(),
+            NotesScreen(folderName: _selectedFolder),
+          ],
+        ),
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
@@ -57,11 +84,11 @@ class _HomeScreenState extends State<HomeScreen> {
           items: const [
             BottomNavigationBarItem(
               icon: Icon(Icons.mic_rounded),
-              label: 'Record',
+              label: 'Capture',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.notes_rounded),
-              label: 'Notes',
+              label: 'Workspace',
             ),
           ],
         ),
@@ -69,3 +96,4 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
+
